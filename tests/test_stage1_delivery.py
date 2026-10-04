@@ -1,5 +1,7 @@
 """Stage 1: a single event is stored, delivered, and the result is recorded."""
 
+import dataclasses
+
 from fastapi.testclient import TestClient
 
 from relayqueue import store
@@ -39,10 +41,11 @@ def test_one_delivery_end_to_end(settings, conn, receiver):
 
 
 def test_failed_response_is_recorded(settings, conn):
+    settings = dataclasses.replace(settings, max_attempts=1)
     client = TestClient(create_app(settings))
     client.post("/v1/endpoints", json={"url": "http://127.0.0.1:9/unreachable"})
     evt = client.post("/v1/events", json={"type": "x", "data": {}}).json()
     dlv_id = evt["deliveries"][0]["id"]
     run_worker_until(Worker(settings), lambda: store.get_delivery(conn, dlv_id)["status"] == "failed")
     d = store.get_delivery(conn, dlv_id)
-    assert d["attempt_log"][0]["error"].startswith("ConnectError")
+    assert "ConnectError" in d["attempt_log"][0]["error"]

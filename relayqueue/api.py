@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Iterator
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from . import store
@@ -24,9 +24,9 @@ class EventIn(BaseModel):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    settings = settings or get_settings()
+    settings = (settings or get_settings()).validate()
     init_db(settings.db_path)
-    app = FastAPI(title="RelayQueue", version="0.1.0")
+    app = FastAPI(title="RelayQueue", version="0.2.0")
 
     def db() -> Iterator[sqlite3.Connection]:
         conn = connect(settings.db_path)
@@ -48,8 +48,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return store.list_endpoints(conn)
 
     @app.post("/v1/events", status_code=202)
-    def create_event(body: EventIn, conn=Depends(db)) -> dict:
-        return store.create_event(conn, body.type, body.data)
+    def create_event(
+        body: EventIn,
+        response: Response,
+        idempotency_key: str | None = Header(default=None, max_length=255),
+        conn=Depends(db),
+    ) -> dict:
+        """Accept an event. Send an ``Idempotency-Key`` header to make retries safe."""
+        try:
+            evt, created = store.create_event(
+                conn, body.type, body.data, settings.max_attempts, idempotency_key
+            )
+        except store.IdempotencyConflict:
+            raise HTTPException(409, "Idempotency-Key was already used with a different payload")
+        if not created:
+            response.status_code = 200
+            response.headers["Idempotent-Replayed"] = "true"
+        return evt
 
     @app.get("/v1/events/{event_id}")
     def get_event(event_id: str, conn=Depends(db)) -> dict:
@@ -59,8 +74,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return evt
 
     @app.get("/v1/deliveries")
-    def list_deliveries(status: str | None = None, limit: int = 100, conn=Depends(db)) -> list[dict]:
-        return store.list_deliveries(conn, status, min(limit, 1000))
+    def list_deliveries(
+        status: str | None = None,
+        endpoint_id: str | None = None,
+        event_id: str | None = None,
+        limit: int = 100,
+        conn=Depends(db),
+    ) -> list[dict]:
+        return store.list_deliveries(conn, status, endpoint_id, event_id, min(limit, 1000))
+
+    @app.get("/v1/failed-deliveries")
+    def failed_deliveries(endpoint_id: str | None = None, limit: int = 100, conn=Depends(db)) -> list[dict]:
+        """Deliveries that permanently failed or ran out of attempts."""
+        return store.list_deliveries(conn, "failed", endpoint_id, None, min(limit, 1000))
 
     @app.get("/v1/deliveries/{delivery_id}")
     def get_delivery(delivery_id: str, conn=Depends(db)) -> dict:
