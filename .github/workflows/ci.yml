@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  chaos:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]" matplotlib
+      - run: python demo/chaos.py --out chaos-results
+      - name: Fail if anything was lost
+        run: |
+          python - <<'PY'
+          import json
+          r = json.load(open("chaos-results/report.json"))
+          assert r["receiver_ground_truth"]["events_lost"] == 0, r["receiver_ground_truth"]
+          assert r["deliveries"]["success_rate"] == 1.0, r["deliveries"]
+          print("no events lost, success rate 100%")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chaos-report
+          path: chaos-results/report.*

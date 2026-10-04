@@ -66,15 +66,13 @@ def client(make_client):
 
 @pytest.fixture
 def receiver():
-    """Demo receiver running in a background thread on a free port."""
-    from demo import receiver as rcv
+    """Demo receiver (demo/receiver.py) running in a background thread on a free port."""
+    from demo.receiver import serve
 
-    rcv.RECEIVED.clear()
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), rcv.Handler)
+    srv = serve("127.0.0.1", 0)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     srv.base_url = f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.module = rcv
     yield srv
     srv.shutdown()
     srv.server_close()

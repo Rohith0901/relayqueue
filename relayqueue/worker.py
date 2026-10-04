@@ -75,6 +75,8 @@ class Worker:
         self._db_lock = threading.Lock()
         self._stop = asyncio.Event()
         self._inflight: set[asyncio.Task] = set()
+        self._results: list[tuple[store.Job, store.Result, asyncio.Future]] = []
+        self._results_ready = asyncio.Event()
         self.processed = 0
 
     def stop(self) -> None:
@@ -85,6 +87,30 @@ class Worker:
             with self._db_lock:
                 return fn(self.conn, *args)
         return await asyncio.to_thread(call)
+
+    async def _flusher(self) -> None:
+        """Group-commit attempt results: everything that finished while the previous
+        write was in progress is recorded in a single transaction."""
+        while True:
+            await self._results_ready.wait()
+            self._results_ready.clear()
+            batch, self._results = self._results, []
+            if not batch:
+                continue
+            try:
+                outcomes = await self._db(store.record_results,
+                                          [(job, self.worker_id, res) for job, res, _ in batch])
+                for (_, _, fut), outcome in zip(batch, outcomes):
+                    fut.set_result(outcome)
+            except Exception as exc:  # noqa: BLE001
+                for *_, fut in batch:
+                    fut.set_exception(exc)
+
+    async def _record(self, job: store.Job, result: store.Result) -> str:
+        fut = asyncio.get_running_loop().create_future()
+        self._results.append((job, result, fut))
+        self._results_ready.set()
+        return await fut
 
     def _beat(self, stopped: bool = False) -> None:
         with self._db_lock:
@@ -105,6 +131,7 @@ class Worker:
         # trust_env=False: never route deliveries through an ambient proxy, which
         # would bypass the SSRF guard's connect-time address checks.
         transport = guarded_transport(limits, s.allow_private_networks)
+        flusher = asyncio.create_task(self._flusher())
         async with httpx.AsyncClient(timeout=timeout, transport=transport, follow_redirects=False,
                                      trust_env=False) as client:
             while not self._stop.is_set():
@@ -133,6 +160,7 @@ class Worker:
             if self._inflight:
                 log.info("draining %d in-flight deliveries", len(self._inflight))
                 await asyncio.gather(*self._inflight, return_exceptions=True)
+        flusher.cancel()
         await asyncio.to_thread(self._beat, True)
         log.info("worker %s stopped after %d attempts", self.worker_id, self.processed)
 
@@ -169,7 +197,7 @@ class Worker:
                                              permanent_error=blocked)
         result = store.Result(outcome, status, reason, resp_body, started, duration_ms, retry_at)
         try:
-            recorded = await self._db(store.record_result, job, self.worker_id, result)
+            recorded = await self._record(job, result)
         except Exception:  # noqa: BLE001 - lease expiry will recover the delivery
             log.exception("failed to record result for %s; claim will expire and be retried",
                           job.delivery_id)

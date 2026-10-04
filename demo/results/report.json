@@ -1,0 +1,195 @@
+{
+  "generated_at": "2026-10-04 15:33:29 Asia",
+  "config": {
+    "rate_per_s": 40,
+    "duration_s": 38,
+    "endpoints": [
+      "ok",
+      "fail-twice",
+      "slow?delay=0.4",
+      "drop-response",
+      "flaky?rate=0.2"
+    ],
+    "workers": 3,
+    "settings": {
+      "allow_private_networks": "true",
+      "log_level": "WARNING",
+      "request_timeout": "2",
+      "lease_seconds": "4",
+      "backoff_base": "0.25",
+      "backoff_max": "4",
+      "max_attempts": "12",
+      "poll_interval": "0.05",
+      "heartbeat_interval": "1"
+    }
+  },
+  "faults": {
+    "single_worker_crash": {
+      "worker": "w1-g1",
+      "killed_at": 3.0,
+      "restarted_at": 5.0
+    },
+    "receiver_outage": {
+      "down_at": 10.0,
+      "up_at": 16.21
+    },
+    "all_workers_crash": {
+      "workers": [
+        "w2-g1",
+        "w3-g1",
+        "w1-g2"
+      ],
+      "killed_at": 26.0,
+      "restarted_at": 29.01
+    },
+    "graceful_restart": {
+      "worker": "w2-g2",
+      "stopped_at": 33.0,
+      "drained_in_s": 0.416
+    }
+  },
+  "submissions": {
+    "sent": 1520,
+    "created": 1383,
+    "idempotent_replay": 137,
+    "errors": 0,
+    "unique_events_stored": 1383
+  },
+  "deliveries": {
+    "expected": 6915,
+    "succeeded": 6915,
+    "failed": 0,
+    "still_pending": 0,
+    "success_rate": 1.0,
+    "first_attempt_success_rate": 0.462,
+    "drain_after_load_end_s": 0.82
+  },
+  "receiver_ground_truth": {
+    "unique_events_processed": 6915,
+    "events_lost": 0,
+    "acked_but_not_received": 0,
+    "duplicate_deliveries_absorbed": 1406,
+    "bad_signatures": 0,
+    "incomplete_requests_from_killed_workers": 0,
+    "per_path": {
+      "/hooks/drop-response": {
+        "requests": 2766,
+        "unique_processed": 1383,
+        "duplicates_absorbed": 1383
+      },
+      "/hooks/fail-twice": {
+        "requests": 4151,
+        "unique_processed": 1383,
+        "duplicates_absorbed": 2
+      },
+      "/hooks/flaky": {
+        "requests": 1741,
+        "unique_processed": 1383,
+        "duplicates_absorbed": 1
+      },
+      "/hooks/ok": {
+        "requests": 1384,
+        "unique_processed": 1383,
+        "duplicates_absorbed": 1
+      },
+      "/hooks/slow": {
+        "requests": 1402,
+        "unique_processed": 1383,
+        "duplicates_absorbed": 19
+      }
+    }
+  },
+  "attempts": {
+    "abandoned": 26,
+    "retry": 9463,
+    "success": 6915
+  },
+  "latency_ms": {
+    "all": {
+      "p50": 604.5,
+      "p95": 8612.3,
+      "p99": 12790.9,
+      "max": 19715.1,
+      "count": 6915
+    },
+    "calm_ok_endpoint": {
+      "p50": 74.4,
+      "p95": 194.4,
+      "p99": 287.8,
+      "max": 313.6,
+      "count": 168
+    },
+    "per_endpoint": {
+      "drop-response": {
+        "p50": 379.3,
+        "p95": 9530.9,
+        "p99": 10913.1,
+        "max": 13020.1,
+        "count": 1383
+      },
+      "fail-twice": {
+        "p50": 897.3,
+        "p95": 12703.3,
+        "p99": 16554.7,
+        "max": 19715.1,
+        "count": 1383
+      },
+      "flaky?rate=0.2": {
+        "p50": 282.5,
+        "p95": 6660.1,
+        "p99": 10050.4,
+        "max": 13379.6,
+        "count": 1383
+      },
+      "ok": {
+        "p50": 103.9,
+        "p95": 6418.0,
+        "p99": 7614.7,
+        "max": 9361.7,
+        "count": 1383
+      },
+      "slow?delay=0.4": {
+        "p50": 520.1,
+        "p95": 7018.9,
+        "p99": 8693.5,
+        "max": 10257.3,
+        "count": 1383
+      }
+    }
+  },
+  "recovery": {
+    "single_worker_crash": {
+      "orphaned_claims": 3,
+      "all_reclaimed_after_s": 3.774,
+      "all_completed_after_s": 4.185,
+      "lost": 0
+    },
+    "receiver_outage": {
+      "outage_s": 6.21,
+      "deliveries_hit_by_outage": 1181,
+      "queue_baseline": 64,
+      "queue_peak": 1162,
+      "queue_back_to_baseline_after_s": 9.37,
+      "backlog_delivered_after_s": {
+        "p50": 2.7,
+        "p95": 8.7,
+        "max": 13.85,
+        "count": 1180
+      }
+    },
+    "all_workers_crash": {
+      "workers_killed": 3,
+      "downtime_s": 3.01,
+      "orphaned_claims": 23,
+      "claims_reclaimed_after_restart_s": 0.961,
+      "pre_crash_backlog_delivered_after_restart_s": 2.553
+    },
+    "graceful_restart": {
+      "drain_s": 0.416,
+      "orphaned_claims": 0
+    }
+  },
+  "throughput": {
+    "deliveries_per_s": 178.1
+  }
+}

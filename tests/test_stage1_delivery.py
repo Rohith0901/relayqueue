@@ -1,6 +1,7 @@
 """Stage 1: a single event is stored, delivered, and the result is recorded."""
 
 import dataclasses
+import json
 
 from fastapi.testclient import TestClient
 
@@ -10,7 +11,7 @@ from tests.conftest import delivery, run_worker_until, status_of
 
 
 def test_one_delivery_end_to_end(settings, conn, client, receiver):
-    ep = client.post("/v1/endpoints", json={"url": receiver.base_url + "/orders"}).json()
+    ep = client.post("/v1/endpoints", json={"url": receiver.base_url + "/hooks/ok"}).json()
     assert ep["id"].startswith("ep_")
 
     resp = client.post("/v1/events", json={"type": "order.created", "data": {"order_id": 42}})
@@ -31,10 +32,11 @@ def test_one_delivery_end_to_end(settings, conn, client, receiver):
     assert attempt["duration_ms"] > 0
     assert attempt["worker_id"] == "w-test"
 
-    [got] = receiver.module.RECEIVED
-    assert got["event_id"] == evt["id"]
-    assert got["payload"]["data"] == {"order_id": 42}
-    assert got["payload"]["type"] == "order.created"
+    [got] = receiver.state.events()
+    assert got["event_id"] == evt["id"] and got["outcome"] == "processed"
+    body = json.loads(got["body"])
+    assert body["data"] == {"order_id": 42}
+    assert body["type"] == "order.created"
 
 
 def test_failed_response_is_recorded(settings, conn, make_client):

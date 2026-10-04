@@ -1,0 +1,36 @@
+# docker compose up --build
+#   dashboard  http://localhost:8000      (create a key: see README)
+#   receiver   http://localhost:9000
+x-relayqueue: &relayqueue
+  build: .
+  volumes: [relayqueue-data:/data]
+  environment:
+    RELAYQUEUE_DB_PATH: /data/relayqueue.db
+    RELAYQUEUE_ADMIN_TOKEN: ${RELAYQUEUE_ADMIN_TOKEN:-change-me}
+    # The demo receiver runs on the private compose network. Remove this line in
+    # production so private/internal destinations are blocked (SSRF protection).
+    RELAYQUEUE_ALLOW_PRIVATE_NETWORKS: "true"
+    RELAYQUEUE_LEASE_SECONDS: "30"
+    RELAYQUEUE_REQUEST_TIMEOUT: "10"
+
+services:
+  api:
+    <<: *relayqueue
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 5s
+
+  worker:
+    <<: *relayqueue
+    command: ["python", "-m", "relayqueue", "worker"]
+    deploy: {replicas: 3}
+    depends_on: {api: {condition: service_healthy}}
+
+  receiver:
+    build: .
+    command: ["python", "demo/receiver.py", "--host", "0.0.0.0", "--port", "9000"]
+    ports: ["9000:9000"]
+
+volumes:
+  relayqueue-data:

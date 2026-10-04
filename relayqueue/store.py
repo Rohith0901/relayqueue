@@ -587,42 +587,50 @@ class Result:
 
 
 def record_result(conn: sqlite3.Connection, job: Job, worker_id: str, res: Result) -> str:
-    """Write an attempt and transition the delivery.
+    """Write an attempt and transition the delivery (see :func:`record_results`)."""
+    return record_results(conn, [(job, worker_id, res)])[0]
 
-    The update is fenced on ``lease_token``: if this worker's claim expired and
+
+def record_results(conn: sqlite3.Connection, items: list[tuple[Job, str, Result]]) -> list[str]:
+    """Record a batch of attempt results in ONE transaction.
+
+    Each update is fenced on ``lease_token``: if a worker's claim expired and
     another worker took the delivery over, the late result is logged as
     ``stale`` but does not overwrite the newer state.
     """
     now = time.time()
     clear = "lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL"
     fence = "WHERE id=? AND lease_token=? AND status='in_flight'"
+    outcomes = []
     with transaction(conn):
-        if res.outcome == "success":
-            cur = conn.execute(
-                f"UPDATE deliveries SET status='succeeded', delivered_at=?, last_status_code=?,"
-                f" last_error=NULL, {clear}, updated_at=? {fence}",
-                (now, res.status_code, now, job.delivery_id, job.lease_token),
+        for job, worker_id, res in items:
+            if res.outcome == "success":
+                cur = conn.execute(
+                    f"UPDATE deliveries SET status='succeeded', delivered_at=?, last_status_code=?,"
+                    f" last_error=NULL, {clear}, updated_at=? {fence}",
+                    (now, res.status_code, now, job.delivery_id, job.lease_token),
+                )
+            elif res.outcome == "retry":
+                cur = conn.execute(
+                    f"UPDATE deliveries SET status='retrying', next_attempt_at=?, last_status_code=?,"
+                    f" last_error=?, {clear}, updated_at=? {fence}",
+                    (res.retry_at, res.status_code, res.error, now, job.delivery_id, job.lease_token),
+                )
+            else:
+                cur = conn.execute(
+                    f"UPDATE deliveries SET status='failed', last_status_code=?, last_error=?,"
+                    f" {clear}, updated_at=? {fence}",
+                    (res.status_code, res.error, now, job.delivery_id, job.lease_token),
+                )
+            outcome = res.outcome if cur.rowcount == 1 else "stale"
+            conn.execute(
+                "INSERT INTO attempts (delivery_id, attempt_number, replay_id, worker_id, started_at,"
+                " duration_ms, status_code, outcome, error, response_body) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (job.delivery_id, job.attempt_number, job.replay_id, worker_id, res.started_at,
+                 res.duration_ms, res.status_code, outcome, res.error, res.response_body),
             )
-        elif res.outcome == "retry":
-            cur = conn.execute(
-                f"UPDATE deliveries SET status='retrying', next_attempt_at=?, last_status_code=?,"
-                f" last_error=?, {clear}, updated_at=? {fence}",
-                (res.retry_at, res.status_code, res.error, now, job.delivery_id, job.lease_token),
-            )
-        else:
-            cur = conn.execute(
-                f"UPDATE deliveries SET status='failed', last_status_code=?, last_error=?,"
-                f" {clear}, updated_at=? {fence}",
-                (res.status_code, res.error, now, job.delivery_id, job.lease_token),
-            )
-        outcome = res.outcome if cur.rowcount == 1 else "stale"
-        conn.execute(
-            "INSERT INTO attempts (delivery_id, attempt_number, replay_id, worker_id, started_at,"
-            " duration_ms, status_code, outcome, error, response_body) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (job.delivery_id, job.attempt_number, job.replay_id, worker_id, res.started_at,
-             res.duration_ms, res.status_code, outcome, res.error, res.response_body),
-        )
-    return outcome
+            outcomes.append(outcome)
+    return outcomes
 
 
 def heartbeat(conn: sqlite3.Connection, worker_id: str, pid: int, hostname: str,
