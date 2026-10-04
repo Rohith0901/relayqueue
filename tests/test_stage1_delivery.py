@@ -4,15 +4,12 @@ import dataclasses
 
 from fastapi.testclient import TestClient
 
-from relayqueue import store
 from relayqueue.api import create_app
 from relayqueue.worker import Worker
-from tests.conftest import run_worker_until
+from tests.conftest import delivery, run_worker_until, status_of
 
 
-def test_one_delivery_end_to_end(settings, conn, receiver):
-    client = TestClient(create_app(settings))
-
+def test_one_delivery_end_to_end(settings, conn, client, receiver):
     ep = client.post("/v1/endpoints", json={"url": receiver.base_url + "/orders"}).json()
     assert ep["id"].startswith("ep_")
 
@@ -24,7 +21,7 @@ def test_one_delivery_end_to_end(settings, conn, receiver):
 
     dlv_id = evt["deliveries"][0]["id"]
     worker = Worker(settings, worker_id="w-test")
-    run_worker_until(worker, lambda: store.get_delivery(conn, dlv_id)["status"] == "succeeded")
+    run_worker_until(worker, lambda: status_of(conn, dlv_id) == "succeeded")
 
     d = client.get(f"/v1/deliveries/{dlv_id}").json()
     assert d["status"] == "succeeded"
@@ -40,12 +37,12 @@ def test_one_delivery_end_to_end(settings, conn, receiver):
     assert got["payload"]["type"] == "order.created"
 
 
-def test_failed_response_is_recorded(settings, conn):
+def test_failed_response_is_recorded(settings, conn, make_client):
     settings = dataclasses.replace(settings, max_attempts=1)
-    client = TestClient(create_app(settings))
-    client.post("/v1/endpoints", json={"url": "http://127.0.0.1:9/unreachable"})
-    evt = client.post("/v1/events", json={"type": "x", "data": {}}).json()
+    c = TestClient(create_app(settings))
+    c.headers.update(make_client().headers)
+    c.post("/v1/endpoints", json={"url": "http://127.0.0.1:9/unreachable"})
+    evt = c.post("/v1/events", json={"type": "x", "data": {}}).json()
     dlv_id = evt["deliveries"][0]["id"]
-    run_worker_until(Worker(settings), lambda: store.get_delivery(conn, dlv_id)["status"] == "failed")
-    d = store.get_delivery(conn, dlv_id)
-    assert "ConnectError" in d["attempt_log"][0]["error"]
+    run_worker_until(Worker(settings), lambda: status_of(conn, dlv_id) == "failed")
+    assert "ConnectError" in delivery(conn, dlv_id)["attempt_log"][0]["error"]

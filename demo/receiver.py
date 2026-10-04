@@ -88,6 +88,10 @@ pre{{margin:0;font-size:12px;white-space:pre-wrap}}</style></head><body>
 </body></html>"""
 
 
+ThreadingHTTPServer.request_queue_size = 256  # default backlog (5) drops connections under load
+ThreadingHTTPServer.daemon_threads = True
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")

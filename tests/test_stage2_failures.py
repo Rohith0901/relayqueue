@@ -14,22 +14,22 @@ from relayqueue import store
 from relayqueue.api import create_app
 from relayqueue.retry import backoff_delay, parse_retry_after
 from relayqueue.worker import Worker, classify
-from tests.conftest import run_worker_until
+from tests.conftest import delivery, run_worker_until, status_of as _status
 
 
 def _job(attempt=1, max_attempts=4):
     return store.Job("dlv_x", "evt_x", "t", "ep_x", "http://x", "{}", attempt, max_attempts, "tok")
 
 
-def _status(conn, dlv_id):
-    return store.get_delivery(conn, dlv_id)["status"]
-
-
-def _setup(settings, url):
-    client = TestClient(create_app(settings))
-    client.post("/v1/endpoints", json={"url": url})
-    evt = client.post("/v1/events", json={"type": "order.created", "data": {"n": 1}}).json()
-    return client, evt["deliveries"][0]["id"]
+@pytest.fixture
+def setup(make_client):
+    def _setup(settings, url):
+        client = TestClient(create_app(settings))
+        client.headers.update(make_client().headers)
+        client.post("/v1/endpoints", json={"url": url})
+        evt = client.post("/v1/events", json={"type": "order.created", "data": {"n": 1}}).json()
+        return client, evt["deliveries"][0]["id"]
+    return _setup
 
 
 # ----------------------------------------------------------------- classification
@@ -83,20 +83,20 @@ def test_backoff_grows_and_is_capped():
 
 # ----------------------------------------------------------------- retries end to end
 
-def test_temporary_failures_are_retried_until_success(settings, conn, scripted):
+def test_temporary_failures_are_retried_until_success(settings, conn, scripted, setup):
     srv = scripted(500, 503, 200)
-    _, dlv = _setup(settings, srv.url)
+    _, dlv = setup(settings, srv.url)
     run_worker_until(Worker(settings), lambda: _status(conn, dlv) == "succeeded")
-    d = store.get_delivery(conn, dlv)
+    d = delivery(conn, dlv)
     assert d["status"] == "succeeded"
     assert [a["outcome"] for a in d["attempt_log"]] == ["retry", "retry", "success"]
     assert [a["status_code"] for a in d["attempt_log"]] == [500, 503, 200]
     assert len(srv.calls) == 3
 
 
-def test_permanent_failure_is_not_retried(settings, conn, scripted):
+def test_permanent_failure_is_not_retried(settings, conn, scripted, setup):
     srv = scripted(400)
-    client, dlv = _setup(settings, srv.url)
+    client, dlv = setup(settings, srv.url)
     run_worker_until(Worker(settings), lambda: _status(conn, dlv) == "failed")
     time.sleep(0.3)
     assert len(srv.calls) == 1
@@ -106,29 +106,29 @@ def test_permanent_failure_is_not_retried(settings, conn, scripted):
     assert failed[0]["endpoint_url"] == srv.url
 
 
-def test_attempts_are_capped(settings, conn, scripted):
+def test_attempts_are_capped(settings, conn, scripted, setup):
     srv = scripted(503)
-    _, dlv = _setup(settings, srv.url)
+    _, dlv = setup(settings, srv.url)
     run_worker_until(Worker(settings), lambda: _status(conn, dlv) == "failed")
-    d = store.get_delivery(conn, dlv)
+    d = delivery(conn, dlv)
     assert d["attempts"] == settings.max_attempts == len(srv.calls)
     assert d["last_error"].startswith("attempts exhausted (4/4)")
 
 
-def test_timeout_counts_as_temporary(settings, conn, scripted):
+def test_timeout_counts_as_temporary(settings, conn, scripted, setup):
     srv = scripted(("sleep", 1.5), 200)  # first call exceeds the 1s timeout
-    _, dlv = _setup(settings, srv.url)
+    _, dlv = setup(settings, srv.url)
     run_worker_until(Worker(settings), lambda: _status(conn, dlv) == "succeeded")
-    log = store.get_delivery(conn, dlv)["attempt_log"]
+    log = delivery(conn, dlv)["attempt_log"]
     assert log[0]["outcome"] == "retry" and "timeout" in log[0]["error"]
     assert log[1]["outcome"] == "success"
 
 
 # ----------------------------------------------------------------- crash recovery
 
-def test_expired_claim_is_recovered_by_another_worker(settings, conn, scripted):
+def test_expired_claim_is_recovered_by_another_worker(settings, conn, scripted, setup):
     srv = scripted(200)
-    _, dlv = _setup(settings, srv.url)
+    _, dlv = setup(settings, srv.url)
 
     # "Crashed" worker: claims the job with a short lease and never reports back.
     [job] = store.claim(conn, "crashed-worker", 10, lease_seconds=0.2)
@@ -137,16 +137,16 @@ def test_expired_claim_is_recovered_by_another_worker(settings, conn, scripted):
     time.sleep(0.3)
 
     run_worker_until(Worker(settings, worker_id="rescuer"), lambda: _status(conn, dlv) == "succeeded")
-    d = store.get_delivery(conn, dlv)
+    d = delivery(conn, dlv)
     assert [(a["outcome"], a["worker_id"]) for a in d["attempt_log"]] == [
         ("abandoned", "crashed-worker"), ("success", "rescuer")]
     rec = conn.execute("SELECT * FROM lease_recoveries").fetchone()
     assert rec["previous_owner"] == "crashed-worker" and rec["reclaimed_by"] == "rescuer"
 
 
-def test_stale_worker_cannot_overwrite_newer_state(settings, conn, scripted):
+def test_stale_worker_cannot_overwrite_newer_state(settings, conn, scripted, setup):
     srv = scripted(200)
-    _, dlv = _setup(settings, srv.url)
+    _, dlv = setup(settings, srv.url)
     [job_a] = store.claim(conn, "A", 1, lease_seconds=0.1)
     time.sleep(0.15)
     [job_b] = store.claim(conn, "B", 1, lease_seconds=5)
@@ -157,21 +157,20 @@ def test_stale_worker_cannot_overwrite_newer_state(settings, conn, scripted):
     assert _status(conn, dlv) == "succeeded"
 
 
-def test_poison_delivery_exhausts_attempts_via_expired_claims(settings, conn, scripted):
+def test_poison_delivery_exhausts_attempts_via_expired_claims(settings, conn, scripted, setup):
     srv = scripted(200)
     s = dataclasses.replace(settings, max_attempts=2)
-    _, dlv = _setup(s, srv.url)
+    _, dlv = setup(s, srv.url)
     for _ in range(2):
         assert len(store.claim(conn, "doomed", 1, lease_seconds=0.05)) == 1
         time.sleep(0.08)
     assert store.claim(conn, "next", 1, lease_seconds=5) == []
-    d = store.get_delivery(conn, dlv)
+    d = delivery(conn, dlv)
     assert d["status"] == "failed" and "last claim expired" in d["last_error"]
 
 
-def test_multiple_claimers_never_share_a_delivery(settings, conn, scripted):
+def test_multiple_claimers_never_share_a_delivery(settings, conn, scripted, client):
     srv = scripted(200)
-    client = TestClient(create_app(settings))
     client.post("/v1/endpoints", json={"url": srv.url})
     for i in range(200):
         client.post("/v1/events", json={"type": "t", "data": {"i": i}})
@@ -197,9 +196,8 @@ def test_multiple_claimers_never_share_a_delivery(settings, conn, scripted):
 
 # ----------------------------------------------------------------- idempotent submission
 
-def test_idempotency_key_deduplicates_submissions(settings, conn, scripted):
+def test_idempotency_key_deduplicates_submissions(settings, conn, scripted, client):
     srv = scripted(200)
-    client = TestClient(create_app(settings))
     client.post("/v1/endpoints", json={"url": srv.url})
     body = {"type": "payment.completed", "data": {"amount": 100}}
     r1 = client.post("/v1/events", json=body, headers={"Idempotency-Key": "pay-1"})
@@ -215,14 +213,14 @@ def test_idempotency_key_deduplicates_submissions(settings, conn, scripted):
     assert conn.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] == 1
 
 
-def test_concurrent_duplicate_submissions_create_one_event(settings, conn, scripted):
+def test_concurrent_duplicate_submissions_create_one_event(settings, conn, scripted, client):
     srv = scripted(200)
-    client = TestClient(create_app(settings))
     client.post("/v1/endpoints", json={"url": srv.url})
     ids, lock = [], threading.Lock()
 
     def submit():
         c = TestClient(create_app(settings))
+        c.headers.update(client.headers)
         r = c.post("/v1/events", json={"type": "t", "data": {"x": 1}}, headers={"Idempotency-Key": "k"})
         with lock:
             ids.append((r.status_code, r.json()["id"]))
@@ -233,3 +231,17 @@ def test_concurrent_duplicate_submissions_create_one_event(settings, conn, scrip
     assert len({i for _, i in ids}) == 1
     assert sorted(code for code, _ in ids) == [200] * 11 + [202]
     assert conn.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0] == 1
+
+
+def test_single_worker_high_concurrency_records_every_result(settings, conn, scripted, client):
+    """Regression: concurrent result writes must not interleave on one connection."""
+    srv = scripted(200)
+    client.post("/v1/endpoints", json={"url": srv.url})
+    ids = [client.post("/v1/events", json={"type": "t", "data": {"i": i}}).json()["deliveries"][0]["id"]
+           for i in range(150)]
+    s = dataclasses.replace(settings, worker_concurrency=32)
+    run_worker_until(Worker(s), lambda: conn.execute(
+        "SELECT COUNT(*) FROM deliveries WHERE status='succeeded'").fetchone()[0] == 150, timeout=20)
+    outcomes = {r[0] for r in conn.execute("SELECT DISTINCT outcome FROM attempts")}
+    assert outcomes == {"success"}
+    assert len(srv.calls) == 150

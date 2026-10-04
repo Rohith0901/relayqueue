@@ -19,6 +19,9 @@ def main() -> None:
 
     sub.add_parser("init-db", help="create the database schema")
 
+    p_acct = sub.add_parser("create-account", help="create an account and print its API key")
+    p_acct.add_argument("name")
+
     args = parser.parse_args()
 
     if args.cmd == "api":
@@ -39,6 +42,19 @@ def main() -> None:
 
         init_db(get_settings().db_path)
         print("schema ready")
+    elif args.cmd == "create-account":
+        import json
+
+        from . import store
+        from .config import get_settings
+        from .db import connect, init_db
+
+        path = get_settings().db_path
+        init_db(path)
+        acct, key = store.create_account(connect(path), args.name)
+        acct["api_key"]["key"] = key
+        print(json.dumps(acct, indent=2))
+        print("\nStore this API key now - it is not shown again.")
 
 
 if __name__ == "__main__":

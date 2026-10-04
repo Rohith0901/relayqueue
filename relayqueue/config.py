@@ -14,6 +14,12 @@ def _env(name: str, default: str) -> str:
 class Settings:
     db_path: str = field(default_factory=lambda: _env("DB_PATH", "relayqueue.db"))
 
+    # Security
+    admin_token: str | None = field(default_factory=lambda: os.environ.get("RELAYQUEUE_ADMIN_TOKEN") or None)
+    allow_private_networks: bool = field(
+        default_factory=lambda: _env("ALLOW_PRIVATE_NETWORKS", "false").lower() in ("1", "true", "yes"))
+    rotation_grace_seconds: float = field(default_factory=lambda: float(_env("ROTATION_GRACE", "86400")))
+
     # Delivery behaviour
     request_timeout: float = field(default_factory=lambda: float(_env("REQUEST_TIMEOUT", "10")))
     max_attempts: int = field(default_factory=lambda: int(_env("MAX_ATTEMPTS", "8")))

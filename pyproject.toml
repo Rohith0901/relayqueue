@@ -18,5 +18,8 @@ relayqueue = "relayqueue.__main__:main"
 [tool.setuptools]
 packages = ["relayqueue"]
 
+[tool.setuptools.package-data]
+relayqueue = ["static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

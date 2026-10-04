@@ -15,7 +15,8 @@ from relayqueue.db import connect, init_db
 def settings(tmp_path) -> Settings:
     s = Settings(db_path=str(tmp_path / "rq.db"), request_timeout=1.0, poll_interval=0.02,
                  worker_concurrency=8, lease_seconds=3.0, max_attempts=4,
-                 backoff_base=0.05, backoff_max=0.2, heartbeat_interval=0.5)
+                 backoff_base=0.05, backoff_max=0.2, heartbeat_interval=0.5,
+                 allow_private_networks=True, admin_token="admin-secret")
     init_db(s.db_path)
     return s
 
@@ -25,6 +26,42 @@ def conn(settings):
     c = connect(settings.db_path)
     yield c
     c.close()
+
+
+def status_of(conn, dlv_id: str) -> str:
+    return conn.execute("SELECT status FROM deliveries WHERE id = ?", (dlv_id,)).fetchone()[0]
+
+
+def delivery(conn, dlv_id: str) -> dict:
+    acct = conn.execute("SELECT account_id FROM deliveries WHERE id = ?", (dlv_id,)).fetchone()[0]
+    from relayqueue import store
+    return store.get_delivery(conn, acct, dlv_id)
+
+
+@pytest.fixture
+def make_client(settings):
+    """Factory: an authenticated TestClient for a brand-new account."""
+    from fastapi.testclient import TestClient
+
+    from relayqueue.api import create_app
+
+    app = create_app(settings)
+
+    def make(name: str = "acme"):
+        c = TestClient(app)
+        r = c.post("/v1/admin/accounts", json={"name": name}, headers={"x-admin-token": "admin-secret"})
+        assert r.status_code == 201, r.text
+        body = r.json()
+        c.headers["authorization"] = "Bearer " + body["api_key"]["key"]
+        c.account_id = body["id"]
+        return c
+
+    return make
+
+
+@pytest.fixture
+def client(make_client):
+    return make_client()
 
 
 @pytest.fixture
@@ -100,6 +137,7 @@ class Scripted:
                 except OSError:
                     pass
 
+        ThreadingHTTPServer.request_queue_size = 256  # default backlog of 5 drops SYNs under load
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.srv.daemon_threads = True
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/hook"
